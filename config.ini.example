@@ -1,0 +1,26 @@
+[auth]
+# 登录方式: qr_code (二维码) / phone (手机号验证码)
+login_method = qr_code
+
+# 如果使用phone登录，可以预填手机号（可选）
+phone = 
+
+[settings]
+# VIP歌单ID（留空则自动创建新歌单）
+vip_playlist_id = 
+
+# VIP歌单名称（自动创建时使用）
+vip_playlist_name = VIP专属歌曲
+
+# 是否启用dry-run模式（仅查看，不实际操作）
+dry_run = false
+
+# 每次API请求间隔（秒），避免请求过快被限流
+request_delay = 0.5
+
+[logging]
+# 日志级别: DEBUG / INFO / WARNING / ERROR
+log_level = INFO
+
+# 是否保存日志到文件
+save_to_file = true
