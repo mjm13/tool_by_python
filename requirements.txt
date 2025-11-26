@@ -1,3 +1,6 @@
 pyncm>=1.6.3
 rich>=13.0.0
 python-dotenv>=1.0.0
+qrcode>=7.4.2
+# 企业信息查询模块依赖
+requests>=2.31.0

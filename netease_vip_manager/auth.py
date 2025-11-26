@@ -39,13 +39,38 @@ class NeteaseAuth:
             是否已登录
         """
         try:
-            # 尝试获取用户账号信息
-            result = apis.user.GetUserAccount()
+            # 尝试获取用户歌单列表来验证登录状态
+            # GetUserDetail(0) 返回404，改用 GetUserPlaylists
+            logger.debug("正在检查登录状态...")
+            result = apis.user.GetUserPlaylists(0, limit=1)  # 0 表示当前登录用户，只获取1个歌单即可
+            logger.debug(f"GetUserPlaylists 返回结果: {result}")
+            
             if result.get('code') == 200:
-                self.user_info = result.get('profile', {})
-                return True
+                # 从返回的歌单信息中获取用户信息
+                playlists = result.get('playlist', [])
+                if playlists:
+                    # 从第一个歌单中提取用户信息
+                    first_playlist = playlists[0]
+                    creator = first_playlist.get('creator', {})
+                    
+                    if creator:
+                        self.user_info = creator
+                        logger.debug(f"登录验证成功，用户: {creator.get('nickname', 'N/A')}")
+                        return True
+                    else:
+                        logger.warning("歌单中没有creator信息")
+                        return False
+                else:
+                    # 没有歌单也算登录成功，尝试从其他地方获取用户信息
+                    logger.warning("用户没有歌单，无法获取用户信息")
+                    # 设置一个基本的user_info
+                    self.user_info = {'userId': 0, 'nickname': '未知用户'}
+                    return True
+            else:
+                logger.warning(f"登录验证失败，返回code: {result.get('code')}, message: {result.get('message', 'N/A')}")
+                return False
         except Exception as e:
-            logger.debug(f"登录检查失败: {e}")
+            logger.error(f"登录检查异常: {e}", exc_info=True)
         
         return False
     
@@ -64,9 +89,22 @@ class NeteaseAuth:
         
         try:
             # 恢复cookies
-            cookies = cache_data.get('cookies', {})
-            for key, value in cookies.items():
-                self.session.cookies.set(key, value)
+            cookies_data = cache_data.get('cookies', [])
+            
+            # 兼容新旧两种格式
+            if isinstance(cookies_data, list):
+                # 新格式：cookies列表
+                for cookie_dict in cookies_data:
+                    self.session.cookies.set(
+                        name=cookie_dict['name'],
+                        value=cookie_dict['value'],
+                        domain=cookie_dict.get('domain', ''),
+                        path=cookie_dict.get('path', '/')
+                    )
+            elif isinstance(cookies_data, dict):
+                # 旧格式：cookies字典（向后兼容）
+                for key, value in cookies_data.items():
+                    self.session.cookies.set(key, value)
             
             # 验证session是否有效
             if self.is_logged_in():
@@ -83,8 +121,18 @@ class NeteaseAuth:
     def save_session_to_cache(self) -> None:
         """保存当前登录会话到缓存"""
         try:
+            # 安全地保存cookies，避免重复cookie名称冲突
+            cookies_list = []
+            for cookie in self.session.cookies:
+                cookies_list.append({
+                    'name': cookie.name,
+                    'value': cookie.value,
+                    'domain': cookie.domain,
+                    'path': cookie.path
+                })
+            
             cache_data = {
-                'cookies': dict(self.session.cookies),
+                'cookies': cookies_list,
                 'user_info': self.user_info,
                 'timestamp': time.time()
             }
@@ -107,7 +155,7 @@ class NeteaseAuth:
             # 获取二维码key
             unikey_result = LoginQrcodeUnikey()
             if unikey_result.get('code') != 200:
-                logger.error("获取二维码key失败")
+                logger.error(f"获取二维码key失败: {unikey_result}")
                 return False
             
             unikey = unikey_result['unikey']
@@ -116,18 +164,31 @@ class NeteaseAuth:
             console.print(f"[green]请使用网易云音乐APP扫描二维码登录[/green]")
             console.print(f"[dim]二维码链接: {qrcode_url}[/dim]\n")
             
-            # 尝试在终端显示二维码
+            # 强制在控制台打印二维码
+            console.print("[bold cyan]═════════════ 登录二维码 ═════════════[/bold cyan]\n")
             try:
                 import qrcode
-                qr = qrcode.QRCode()
+                qr = qrcode.QRCode(border=1)
                 qr.add_data(qrcode_url)
+                qr.make()
+                # 打印ASCII二维码到控制台
                 qr.print_ascii(invert=True)
+                console.print()
             except ImportError:
-                console.print("[yellow]提示: 安装 qrcode 库可以在终端直接显示二维码[/yellow]")
-                console.print(f"[yellow]或者访问: {qrcode_url}[/yellow]\n")
+                # 如果没有qrcode库，使用简单的文本二维码
+                console.print("[yellow]⚠ 未安装 qrcode 库，无法显示二维码图形[/yellow]")
+                console.print(f"[yellow]请手动访问以下链接获取二维码:[/yellow]")
+                console.print(f"[bold cyan]{qrcode_url}[/bold cyan]")
+                console.print()
+                console.print("[dim]提示: 运行 'pip install qrcode' 可在控制台直接显示二维码[/dim]\n")
+            except Exception as e:
+                logger.warning(f"打印二维码失败: {e}")
+                console.print(f"[yellow]二维码链接: {qrcode_url}[/yellow]\n")
+            
+            console.print("[bold cyan]═══════════════════════════════════════[/bold cyan]\n")
             
             # 轮询检查扫码状态
-            console.print("[cyan]等待扫码...[/cyan]")
+            console.print("[cyan]⏳ 等待扫码...[/cyan]")
             
             max_attempts = 60  # 最多等待60次，每次2秒，共2分钟
             for attempt in range(max_attempts):
@@ -136,21 +197,63 @@ class NeteaseAuth:
                 check_result = LoginQrcodeCheck(unikey)
                 code = check_result.get('code')
                 
+                logger.debug(f"扫码检查结果 (尝试 {attempt + 1}/{max_attempts}): code={code}")
+                
                 if code == 803:  # 授权登录成功
-                    console.print("[green]✓ 登录成功![/green]\n")
+                    console.print("[green]✓ 扫码授权成功![/green]")
+                    logger.info(f"登录响应: {check_result}")
                     
-                    # 获取用户信息
+                    # pyncm的LoginQrcodeCheck成功时会自动更新session的cookies
+                    # 但我们需要确保关键cookie存在
+                    console.print("[cyan]正在验证登录状态...[/cyan]")
+                    
+                    # 打印当前session的cookies用于调试（安全方式，避免重复cookie冲突）
+                    try:
+                        cookies_list = [(c.name, c.value[:20] + "..." if len(c.value) > 20 else c.value) 
+                                       for c in self.session.cookies]
+                        logger.debug(f"当前session cookies数量: {len(self.session.cookies)}")
+                        logger.debug(f"Cookie名称列表: {[c.name for c in self.session.cookies]}")
+                    except Exception as e:
+                        logger.debug(f"打印cookies信息时出错: {e}")
+                    
+                    # 稍作延迟让cookies生效
+                    time.sleep(1)
+                    
+                    # 验证登录状态
                     if self.is_logged_in():
+                        console.print("[green]✓ 登录验证成功![/green]\n")
                         self.save_session_to_cache()
                         self._display_user_info()
                         return True
+                    else:
+                        # 登录验证失败，尝试查看详细信息
+                        logger.error("登录授权成功但验证失败")
+                        
+                        # 安全地打印cookies信息
+                        try:
+                            cookie_names = [c.name for c in self.session.cookies]
+                            logger.error(f"Session cookies数量: {len(self.session.cookies)}")
+                            logger.error(f"Cookie名称: {cookie_names}")
+                        except Exception as e:
+                            logger.error(f"无法读取cookies: {e}")
+                        
+                        # 尝试直接调用API查看错误
+                        try:
+                            test_result = apis.user.GetUserPlaylists(0, limit=1)
+                            logger.error(f"GetUserPlaylists 返回: {test_result}")
+                        except Exception as e:
+                            logger.error(f"GetUserPlaylists 异常: {e}", exc_info=True)
+                        
+                        console.print("[red]✗ 登录验证失败[/red]")
+                        console.print("[yellow]提示: 这可能是网易云API的问题，请稍后重试[/yellow]")
+                        return False
                     
                 elif code == 800:  # 二维码过期
                     console.print("[red]✗ 二维码已过期，请重试[/red]")
                     return False
                 
                 elif code == 802:  # 已扫码，等待确认
-                    console.print("[yellow]已扫码，请在手机上确认...[/yellow]")
+                    console.print("[yellow]📱 已扫码，请在手机上确认...[/yellow]")
                 
                 # code == 801 表示等待扫码，继续轮询
             
@@ -158,7 +261,8 @@ class NeteaseAuth:
             return False
         
         except Exception as e:
-            logger.error(f"二维码登录失败: {e}")
+            logger.error(f"二维码登录失败: {e}", exc_info=True)
+            console.print(f"[red]✗ 二维码登录出错: {e}[/red]")
             return False
     
     @retry_on_error(max_retries=3)

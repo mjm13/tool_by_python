@@ -119,21 +119,31 @@ class MusicScanner:
         
         vip_songs = []
         
+        # 调试：打印前几首歌的fee信息
+        logger.debug("前5首歌曲的fee信息：")
+        for i, song in enumerate(self.liked_songs[:5]):
+            logger.debug(f"  {i+1}. {song.get('name', 'N/A')} - fee: {song.get('fee', 0)}, privilege: {song.get('privilege', {})}")
+        
         for song in self.liked_songs:
             fee = song.get('fee', 0)
+            privilege = song.get('privilege', {})
             
             # 检查是否是VIP歌曲
-            if fee in self.VIP_FEE_TYPES:
-                # 双重验证：检查privilege字段
-                privilege = song.get('privilege', {})
-                # 如果需要付费或VIP才能播放
-                if privilege.get('fee', 0) in self.VIP_FEE_TYPES or privilege.get('payed', 0) == 0:
-                    vip_songs.append(song)
+            # fee = 1: VIP专属歌曲（需要VIP才能播放）
+            # fee = 8: VIP高音质（普通音质免费，高音质需要VIP）
+            # fee = 4: 购买专辑/单曲
+            # fee = 0: 免费歌曲
+            
+            # 只有fee为1时才是真正的VIP专属歌曲
+            # fee为8的歌曲可以免费听低音质，不应该移除
+            if fee == 1:
+                vip_songs.append(song)
+                logger.debug(f"识别为VIP歌曲: {song.get('name', 'N/A')} (fee={fee}, privilege={privilege})")
         
         self.vip_songs = vip_songs
         
-        console.print(f"[green]✓ 识别出 {len(vip_songs)} 首VIP歌曲[/green]\n")
-        logger.info(f"识别出 {len(vip_songs)} 首VIP歌曲")
+        console.print(f"[green]✓ 识别出 {len(vip_songs)} 首VIP专属歌曲[/green]\n")
+        logger.info(f"识别出 {len(vip_songs)} 首VIP专属歌曲（fee=1）")
         
         return vip_songs
     
@@ -170,8 +180,7 @@ class MusicScanner:
             
             fee = song.get('fee', 0)
             fee_text = {
-                1: 'VIP',
-                8: 'VIP高音质'
+                1: 'VIP专属',
             }.get(fee, f'未知({fee})')
             
             table.add_row(
